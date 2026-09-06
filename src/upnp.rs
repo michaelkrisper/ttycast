@@ -11,9 +11,11 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs, UdpSocket};
+use std::os::fd::FromRawFd;
 use std::time::{Duration, Instant};
 
 pub const SSDP_ADDR: &str = "239.255.255.250:1900";
+pub const SSDP_PORT: u16 = 1900;
 pub const RENDERER: &str = "urn:schemas-upnp-org:device:MediaRenderer:1";
 pub const AVTRANSPORT: &str = "urn:schemas-upnp-org:service:AVTransport:1";
 const USER_AGENT: &str = "ttycast/0.2 UPnP/1.0";
@@ -115,11 +117,48 @@ pub fn join_url(base: &str, path: &str) -> String {
     }
 }
 
+/// A socket to search from, on port 1900 if that can be had.
+///
+/// Some televisions - Hisense's VIDAA among them - ignore the source port of an
+/// M-SEARCH and unicast the reply to 1900 regardless, so a control point on an
+/// ephemeral port never hears an answer. Binding 1900 with SO_REUSEADDR and
+/// SO_REUSEPORT gets those replies while still coexisting with a local UPnP
+/// daemon that holds the same port; an ephemeral port is the fallback.
+fn ssdp_socket() -> Option<UdpSocket> {
+    // SAFETY: a plain socket/setsockopt/bind sequence on a fd we own, handed to
+    // UdpSocket only after a successful bind, and closed on every other path.
+    unsafe {
+        let fd = libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0);
+        if fd >= 0 {
+            let one: libc::c_int = 1;
+            let size = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+            let value = std::ptr::from_ref(&one).cast::<libc::c_void>();
+            libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, value, size);
+            libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, value, size);
+
+            let mut addr: libc::sockaddr_in = std::mem::zeroed();
+            addr.sin_family = libc::AF_INET as libc::sa_family_t;
+            addr.sin_port = SSDP_PORT.to_be();
+            addr.sin_addr.s_addr = libc::INADDR_ANY.to_be();
+            let bound = libc::bind(
+                fd,
+                std::ptr::from_ref(&addr).cast::<libc::sockaddr>(),
+                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            );
+            if bound == 0 {
+                return Some(UdpSocket::from_raw_fd(fd));
+            }
+            libc::close(fd);
+        }
+    }
+    UdpSocket::bind("0.0.0.0:0").ok()
+}
+
 /// M-SEARCH the LAN; map responder address to its device description URL.
 #[must_use]
 pub fn discover_raw(timeout: Duration) -> BTreeMap<String, String> {
     let mut found = BTreeMap::new();
-    let Ok(socket) = UdpSocket::bind("0.0.0.0:0") else {
+    let Some(socket) = ssdp_socket() else {
         return found;
     };
     let _ = socket.set_read_timeout(Some(Duration::from_millis(300)));
@@ -435,5 +474,29 @@ ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n";
     #[test]
     fn http_rejects_a_url_it_cannot_speak() {
         assert!(http("ftp://example.com/x", "GET", &[], None).is_err());
+    }
+}
+
+#[cfg(test)]
+mod live_probe {
+    use super::*;
+
+    #[test]
+    #[ignore = "needs a real TV on the LAN"]
+    fn probe() {
+        let raw = discover_raw(Duration::from_secs(4));
+        eprintln!("discover_raw -> {} responders", raw.len());
+        for (address, location) in &raw {
+            eprintln!("  {address}  {location}");
+            match http(location, "GET", &[], None) {
+                Ok(body) => eprintln!(
+                    "    GET ok, {} bytes, control_url={:?}",
+                    body.len(),
+                    control_url(&body, location)
+                ),
+                Err(e) => eprintln!("    GET FAILED: {e}"),
+            }
+        }
+        eprintln!("discover() -> {:?}", discover(Duration::from_secs(4)).len());
     }
 }

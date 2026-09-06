@@ -11,14 +11,14 @@ sofa, and the shell on the big screen.
 
 ```
 $ ttycast
-ttycast 0.1.0  1280x720 @ 10 fps  backend=browser
+ttycast 0.2.0  1280x720 @ 10 fps  backend=browser
   open on the TV:  http://192.168.1.42:8009/
   raw stream:      http://192.168.1.42:8009/stream.mjpg
-  14 frames  4.8 ms/frame  http://192.168.1.42:8009/  (ctrl-c to stop)
+  14 frames   1.2 ms/frame  http://192.168.1.42:8009/  (ctrl-c to stop)
 ```
 
-The server starts with the command and dies with it. No daemon, no config file,
-no state on disk.
+One static binary, ~2 MB. The server starts with the command and dies with it.
+No daemon, no config file, no state on disk.
 
 ## Why it can be this cheap
 
@@ -31,8 +31,7 @@ times a second, and only in places. So `ttycast` never captures the screen:
   before it is parsed, so an idle shell never reaches the renderer at all.
 - **A changed pane repaints the rows that changed**, not the screen. Typing a
   character redraws one row.
-- **Glyphs are rasterised once** and then blitted. FreeType is the expensive
-  part of drawing text, and a terminal uses the same hundred-odd glyphs forever.
+- **Glyphs are rasterised once** into coverage masks and then blitted.
 - Because the source is text, the output is **crisp at any resolution**. No
   upscaling of a laptop panel, no unreadable 8pt fonts on a screen three metres
   away.
@@ -40,20 +39,28 @@ times a second, and only in places. So `ttycast` never captures the screen:
 ## Performance
 
 Measured on an Intel i5-4258U (a 2013 dual-core laptop), 1280x720 output, a
-149x44 pane:
+149x44 pane. The `0.1` column is the Python implementation this replaced,
+measured the same way on the same machine:
 
-| Situation | Cost per frame | Ceiling |
+| | 0.1 (Python) | 0.2 (Rust) |
 |---|---|---|
-| Idle - nothing on screen moved | 3.7 ms (one tmux call, no render) | - |
-| Typing - one row changed | ~5 ms | ~200 fps |
-| Full-screen scrolling - every row changed | ~29 ms | **34 fps sustained** |
-| H.264 encode, 720p, libopenh264 | 9 ms | 111 fps |
+| Full-screen scrolling, end to end | 34 fps | **121 fps** |
+| Render, every row changed | 14.3 ms | **1.4 ms** |
+| Render, one row changed (typing) | 5 ms | **0.3 ms** |
+| ANSI parse | 2.2 ms | **0.03 ms** |
+| JPEG encode | 4.0 ms | **3.3 ms** |
+| Process startup | 185 ms | **1.3 ms** |
 
-The first version of the renderer drew each character with its own `draw.text`
-call and took **509 ms per frame**, which capped the whole thing at 2 fps. Run
-drawing, the glyph cache and row diffing took that to 15 ms. If you change the
-renderer, `tests/test_render.py` asserts that the incremental output is
-byte-identical to a full repaint, and that a one-row change repaints one row.
+Two of those numbers are worth explaining, because they were not free:
+
+- **JPEG.** The pure-Rust encoders are about three times slower than
+  libjpeg-turbo, so this uses mozjpeg. mozjpeg optimises for file size by
+  default - trellis quantisation, optimised Huffman tables - which costs 90 ms
+  per 720p frame; `set_fastest_defaults()` and 4:2:0 chroma bring it to 3.3 ms.
+  A live terminal wants the milliseconds far more than the last few kilobytes.
+- **Capture.** About 3.7 ms of every frame is spawning tmux and reading its
+  pipe. That is process overhead and no language changes it, which is why
+  capture was folded into a single invocation rather than three.
 
 Latency, end to end, is dominated by the transport and not by ttycast:
 `browser` is one frame, `miracast` is sub-second, and `dlna` is seconds because
@@ -62,11 +69,12 @@ the television buffers.
 ## Install
 
 ```bash
-pipx install ttycast          # or: pip install ttycast
+cargo install --git https://github.com/michaelkrisper/ttycast
 ```
 
-Needs Python 3.10+, `tmux`, and a monospace font. `ffmpeg` is only needed for
-the DLNA and Miracast backends; ttycast picks whichever H.264 encoder it finds
+Building needs `nasm` (mozjpeg compiles libjpeg-turbo's SIMD kernels).
+Running needs `tmux` and a monospace font. `ffmpeg` is only needed for the DLNA
+and Miracast backends; ttycast picks whichever H.264 encoder it finds
 (`libx264`, `libopenh264` or `h264_vaapi`), so a distribution shipping a
 patent-free ffmpeg works as it is.
 
@@ -136,7 +144,7 @@ If `P2P-GO` is missing, no software can add it; a USB adapter on `mt76`
 (e.g. MT7612U), `rtw88`, or an Intel AX2xx will.
 
 **Status: experimental.** The RTSP capability negotiation
-([`ttycast/wfd.py`](ttycast/wfd.py)) and the RTP transport are implemented and
+([`src/wfd.rs`](src/wfd.rs)) and the RTP transport are implemented and
 unit-tested, and `ttycast` will send to a sink you have already associated with
 `--sink-host`. Automatic session setup — driving wpa_supplicant through the
 Wi-Fi Direct connect and the M1..M7 exchange — is not wired up yet. The path is
@@ -181,11 +189,11 @@ blind.
 
 ```
 -t, --target auto     which pane to mirror
--f, --fps 10          capture rate; 1 is fine, 30 is smooth
+-f, --fps 10          capture rate; 1 is fine, 60 is smooth
 -s, --size 1280x720   output resolution
     --bitrate 2M      H.264 bitrate for dlna/miracast
-    --font PATH       a specific monospace font
     --encoder NAME    force an ffmpeg H.264 encoder
+    --font PATH       a specific monospace font
     --screen-off      darken this laptop's screen while someone is watching
     --once            render one frame and exit
 ```
@@ -208,20 +216,25 @@ you.
 ```
 tmux capture-pane -e          text + SGR
         |
-   ttycast/ansi.py            -> cell grid
+   src/ansi.rs                -> cell grid
         |
-   ttycast/render.py          -> RGB frame (Pillow, style runs)
+   src/render.rs              -> RGB frame (glyph cache, row diffing)
         |
-   ttycast/framebus.py        latest frame, consumers wake on change
+   src/framebus.rs            latest frame, consumers wake on change
         |
-        +--> server.py        /stream.mjpg   -> browser
-        +--> encoder.py       H.264/MPEG-TS  -> /live.ts -> DLNA renderer
-        +--> encoder.py       H.264/RTP      -> Miracast sink
+        +--> server.rs        /stream.mjpg   -> browser
+        +--> encoder.rs       H.264/MPEG-TS  -> /live.ts -> DLNA renderer
+        +--> encoder.rs       H.264/RTP      -> Miracast sink
 ```
 
 Backends do not touch capture or rendering. They only decide how the display
 finds out about the stream: you tell it (`browser`), UPnP tells it (`dlna`), or
 a wireless display session carries it (`miracast`).
+
+Five dependencies: `clap`, `fontdue`, `mozjpeg`, `png` and `libc`. The HTTP
+server, the SSDP/SOAP control point and the RTSP message layer are hand-rolled
+on `std::net` — the whole HTTP surface is five routes, and a framework would
+cost more than it saves.
 
 ## Security
 
@@ -239,13 +252,15 @@ would use them.
 ```bash
 git clone https://github.com/michaelkrisper/ttycast
 cd ttycast
-python -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest
-.venv/bin/ruff check .
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
 ```
 
 The protocol layers are pure functions with no I/O — `ansi`, `wfd`, `upnp`,
-`wifi` — so they are tested without a network, a TV, or a radio.
+`wifi` — so they are tested without a network, a TV, or a radio. `render` is
+tested against the property that matters: incremental output must be
+byte-identical to a full repaint.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 

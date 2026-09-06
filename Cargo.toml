@@ -1,0 +1,41 @@
+[package]
+name = "ttycast"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Cast your terminal to a TV - browser, DLNA or Miracast, straight from the shell."
+authors = ["Michael Krisper <michael.krisper@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/michaelkrisper/ttycast"
+keywords = ["terminal", "tmux", "miracast", "dlna", "screencast"]
+categories = ["command-line-utilities", "multimedia::video"]
+
+[dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+fontdue = "0.9.4"
+libc = "0.2.189"
+mozjpeg = "0.10.13"
+png = "0.18.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Pixel maths converts between usize, i32 and u8 constantly; every one of these
+# is bounded by the frame, so the casts are noise rather than signal.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+doc_markdown = "allow"
+struct_excessive_bools = "allow"
+
+[dev-dependencies]
+jpeg-encoder = { version = "0.7.1", features = ["simd"] }

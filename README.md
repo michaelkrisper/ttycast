@@ -11,10 +11,10 @@ sofa, and the shell on the big screen.
 
 ```
 $ ttycast
-ttycast 0.1.0  1280x720 @ 5 fps  backend=browser
+ttycast 0.1.0  1280x720 @ 10 fps  backend=browser
   open on the TV:  http://192.168.1.42:8009/
   raw stream:      http://192.168.1.42:8009/stream.mjpg
-  14 frames  http://192.168.1.42:8009/  (ctrl-c to stop)
+  14 frames  4.8 ms/frame  http://192.168.1.42:8009/  (ctrl-c to stop)
 ```
 
 The server starts with the command and dies with it. No daemon, no config file,
@@ -65,8 +65,10 @@ the television buffers.
 pipx install ttycast          # or: pip install ttycast
 ```
 
-Needs Python 3.10+, `tmux`, and a monospace font. `ffmpeg` with `libx264` is
-only needed for the DLNA and Miracast backends.
+Needs Python 3.10+, `tmux`, and a monospace font. `ffmpeg` is only needed for
+the DLNA and Miracast backends; ttycast picks whichever H.264 encoder it finds
+(`libx264`, `libopenh264` or `h264_vaapi`), so a distribution shipping a
+patent-free ffmpeg works as it is.
 
 Start by asking what works on your machine:
 
@@ -149,6 +151,7 @@ written. Reports from real sinks are very welcome.
 -s, --size 1280x720   output resolution
     --bitrate 2M      H.264 bitrate for dlna/miracast
     --font PATH       a specific monospace font
+    --encoder NAME    force an ffmpeg H.264 encoder
     --once            render one frame and exit
 ```
 

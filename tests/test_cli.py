@@ -5,6 +5,21 @@ import pytest
 from ttycast import backends, cli
 
 
+@pytest.fixture
+def encoder_present(monkeypatch):
+    """Pretend ffmpeg is installed with a working encoder.
+
+    Without this the result depends on the machine running the tests: a CI
+    image with no ffmpeg reports a different set of problems than a developer
+    laptop that has one.
+    """
+    for module in ("miracast", "dlna"):
+        monkeypatch.setattr(f"ttycast.backends.{module}.have_ffmpeg", lambda: True)
+        monkeypatch.setattr(
+            f"ttycast.backends.{module}.pick_encoder", lambda preferred=None: "libx264"
+        )
+
+
 def test_every_backend_is_constructible_and_documented():
     for name, cls in backends.REGISTRY.items():
         assert cls.summary, f"{name} has no summary"
@@ -70,20 +85,18 @@ def test_discover_prints_what_it_found(monkeypatch, capsys):
     assert "Smart TV" in capsys.readouterr().out
 
 
-def test_miracast_preflight_blocks_without_p2p(monkeypatch):
+def test_miracast_preflight_blocks_without_p2p(monkeypatch, encoder_present):
     backend = backends.create("miracast")
     monkeypatch.setattr(
         "ttycast.backends.miracast.p2p_report", lambda: (False, ["phy0: no P2P mode"])
     )
-    monkeypatch.setattr("ttycast.backends.miracast.have_ffmpeg", lambda: True)
     ctx = backends.Context(width=1280, height=720, fps=5, bitrate="2M", port=8009)
     problems = backend.preflight(ctx)
     assert any("Wi-Fi Direct" in problem for problem in problems)
 
 
-def test_miracast_preflight_skips_hardware_checks_for_a_known_sink(monkeypatch):
+def test_miracast_preflight_skips_hardware_checks_for_a_known_sink(encoder_present):
     backend = backends.create("miracast")
-    monkeypatch.setattr("ttycast.backends.miracast.have_ffmpeg", lambda: True)
     ctx = backends.Context(
         width=1280,
         height=720,
@@ -98,3 +111,17 @@ def test_miracast_preflight_skips_hardware_checks_for_a_known_sink(monkeypatch):
 def test_browser_backend_needs_nothing():
     ctx = backends.Context(width=1280, height=720, fps=5, bitrate="2M", port=8009)
     assert backends.create("browser").preflight(ctx) == []
+
+
+def test_dlna_preflight_names_the_missing_encoder(monkeypatch):
+    monkeypatch.setattr("ttycast.backends.dlna.have_ffmpeg", lambda: True)
+    monkeypatch.setattr("ttycast.backends.dlna.pick_encoder", lambda preferred=None: None)
+    ctx = backends.Context(width=1280, height=720, fps=5, bitrate="2M", port=8009)
+    problems = backends.create("dlna").preflight(ctx)
+    assert len(problems) == 1
+    assert "libopenh264" in problems[0]
+
+
+def test_dlna_preflight_is_happy_with_an_encoder(encoder_present):
+    ctx = backends.Context(width=1280, height=720, fps=5, bitrate="2M", port=8009)
+    assert backends.create("dlna").preflight(ctx) == []

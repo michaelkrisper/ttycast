@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 
-from ttycast import __version__, ansi, capture, doctor, render, upnp
+from ttycast import __version__, ansi, capture, display, doctor, render, upnp
 from ttycast.backends import REGISTRY, BackendError, Context, create
 from ttycast.encoder import TSBroadcaster
 from ttycast.framebus import FrameBus
@@ -53,6 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     found.add_argument("--timeout", type=float, default=3.0)
 
     sub.add_parser("backends", help="list available backends")
+    sub.add_parser("screen-on", help="undo --screen-off after a crash")
     return parser
 
 
@@ -82,6 +83,14 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sink-port", type=int, default=5000, help="miracast: RTP port")
     parser.add_argument(
         "--preview-path", default="ttycast-preview.png", help="preview: file to write"
+    )
+    parser.add_argument(
+        "--screen-off",
+        nargs="?",
+        const="auto",
+        default=None,
+        choices=["auto", *display.BY_NAME],
+        help="darken this laptop's own screen while someone is watching the stream",
     )
     parser.add_argument("--once", action="store_true", help="render a single frame and exit")
     parser.add_argument("-q", "--quiet", action="store_true", help="no status line")
@@ -123,6 +132,9 @@ class Session:
         self.renderer = render.Renderer(size=args.size, font=args.font)
         self.frames = 0
         self.tick_ms = 0.0
+        self.screen = display.ScreenPower(
+            display.pick(args.screen_off) if args.screen_off else None
+        )
 
     def log(self, message: str) -> None:
         if not self.args.quiet:
@@ -155,6 +167,13 @@ class Session:
                 f"@ {self.args.fps} fps  backend={self.backend.name}",
                 file=sys.stderr,
             )
+        if self.args.screen_off:
+            if self.screen.active:
+                assert self.screen.method is not None
+                self.log(f"screen off while watched: {self.screen.method.describes}")
+                self.log("if ttycast dies without restoring it: ttycast screen-on")
+            else:
+                self.log(f"no way to darken the screen here ({self.args.screen_off})")
 
         # One frame before the backend starts, so a TV that connects immediately
         # never sees an empty stream.
@@ -178,6 +197,7 @@ class Session:
             self.backend.on_frame(self.ctx, changed)
             if changed:
                 self.tick_ms = (time.perf_counter() - started) * 1000
+            self.screen.update(self.server.viewers, time.monotonic())
             next_tick += interval
             delay = next_tick - time.monotonic()
             if delay < 0:
@@ -213,11 +233,14 @@ class Session:
     def _status(self) -> None:
         detail = self.backend.status(self.ctx)
         cost = f"{self.tick_ms:4.1f} ms/frame" if self.tick_ms else ""
-        line = f"\r  {self.frames} frames  {cost}  {detail}  (ctrl-c to stop)"
+        screen = f"  [{self.screen.status()}]" if self.screen.active else ""
+        line = f"\r  {self.frames} frames  {cost}  {detail}{screen}  (ctrl-c to stop)"
         print(line[:110].ljust(110), end="", file=sys.stderr, flush=True)
 
     def shutdown(self) -> None:
         self.stop_event.set()
+        # First thing on the way out: the user needs their screen back.
+        self.screen.restore()
         try:
             self.backend.stop(self.ctx)
         except Exception as exc:  # noqa: BLE001 - teardown must not mask the exit
@@ -245,6 +268,12 @@ def command_discover(timeout: float) -> int:
     return 0
 
 
+def command_screen_on() -> int:
+    restored = display.restore_all()
+    print("restored: " + ", ".join(restored) if restored else "nothing to restore")
+    return 0
+
+
 def command_backends() -> int:
     for name, cls in REGISTRY.items():
         print(f"{name:<9} {cls.summary}")
@@ -268,6 +297,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_discover(args.timeout)
     if args.command == "backends":
         return command_backends()
+    if args.command == "screen-on":
+        return command_screen_on()
 
     try:
         session = Session(args)

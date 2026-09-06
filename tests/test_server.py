@@ -1,4 +1,5 @@
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -87,3 +88,39 @@ def test_mjpeg_delivers_frames_as_they_are_published(server, bus):
 
 def test_base_url_uses_the_bound_port(server):
     assert f":{server.port}" in server.base_url(host="10.0.0.1")
+
+
+def test_viewers_start_at_zero(server):
+    assert server.viewers == 0
+
+
+def test_a_streaming_client_counts_as_a_viewer(server, bus):
+    bus.publish(Image.new("RGB", (16, 16), (5, 5, 5)))
+    url = f"http://127.0.0.1:{server.port}/stream.mjpg"
+    seen = []
+
+    def read():
+        with urllib.request.urlopen(url, timeout=5) as response:  # noqa: S310
+            response.read(100)
+            seen.append(server.viewers)
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    for shade in (20, 60, 120):
+        bus.publish(Image.new("RGB", (16, 16), (shade, shade, shade)))
+    reader.join(timeout=5)
+    assert seen == [1]
+
+    # The handler is parked in bus.wait(); it only learns the client is gone
+    # when it tries to write, so keep publishing until it unwinds.
+    for shade in range(0, 250, 5):
+        if server.viewers == 0:
+            break
+        bus.publish(Image.new("RGB", (16, 16), (shade, shade, shade)))
+        time.sleep(0.05)
+    assert server.viewers == 0
+
+
+def test_health_reports_the_viewer_count(server):
+    _, _, body = get(server, "/health")
+    assert b"viewers=0" in body

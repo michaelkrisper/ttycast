@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `--screen-off`: darken this laptop's own screen while a client is watching the
+  stream, and restore it when the last one leaves. Prefers compositor output
+  power management (sway, wlopm, xset) over dimming the backlight, because it
+  measured 3.6 W better. `ttycast screen-on` restores the screen if ttycast was
+  killed before it could.
+- The HTTP server counts viewers, reported by `/health` and used to drive
+  `--screen-off`.
+
 ### Changed
 
 - Rendering is roughly 30x faster: style runs are drawn in one call, glyphs are

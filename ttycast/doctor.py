@@ -10,7 +10,7 @@ import shutil
 import socket
 from dataclasses import dataclass
 
-from ttycast import capture, render, upnp, wifi
+from ttycast import capture, display, render, upnp, wifi
 from ttycast.encoder import H264_ENCODERS, have_ffmpeg, pick_encoder
 
 
@@ -71,6 +71,16 @@ def run(port: int = 8009, discover: bool = True) -> list[Check]:
     checks.append(Check("LAN address", ip != "127.0.0.1", ip))
     checks.append(
         Check(f"port {port}", _port_free(port), "free" if _port_free(port) else "already in use")
+    )
+
+    method = display.pick("auto")
+    checks.append(
+        Check(
+            "screen off (--screen-off)",
+            method is not None,
+            method.describes if method else "no usable method found on this session",
+            optional=True,
+        )
     )
 
     usable, lines = wifi.p2p_report()

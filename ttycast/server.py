@@ -106,6 +106,7 @@ class _Handler(BaseHTTPRequestHandler):
         ts = self.ts
         body = (
             f"ttycast ok\nframes={self.bus.seq}\n"
+            f"viewers={self.server.viewers}\n"  # type: ignore[attr-defined]
             f"ts_running={bool(ts and ts.running)}\n"
             f"ts_clients={ts.client_count if ts else 0}\n"
         ).encode()
@@ -127,6 +128,7 @@ class _Handler(BaseHTTPRequestHandler):
         if head_only:
             return
         seq = -1
+        self.server.viewer_arrived()  # type: ignore[attr-defined]
         try:
             while not getattr(self.server, "shutting_down", False):
                 seq = self.bus.wait(seq)
@@ -141,6 +143,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self.wfile.write(b"\r\n")
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
+        finally:
+            self.server.viewer_left()  # type: ignore[attr-defined]
 
     def _ts(self, head_only: bool) -> None:
         ts = self.ts
@@ -162,6 +166,7 @@ class _Handler(BaseHTTPRequestHandler):
         if head_only:
             return
         queue, event = ts.subscribe()
+        self.server.viewer_arrived()  # type: ignore[attr-defined]
         try:
             while not getattr(self.server, "shutting_down", False):
                 if not queue:
@@ -174,6 +179,7 @@ class _Handler(BaseHTTPRequestHandler):
             pass
         finally:
             ts.unsubscribe(queue)
+            self.server.viewer_left()  # type: ignore[attr-defined]
 
 
 class CastServer(ThreadingHTTPServer):
@@ -194,6 +200,26 @@ class CastServer(ThreadingHTTPServer):
         self.logger = logger
         self.shutting_down = False
         self._thread: threading.Thread | None = None
+        self._viewers = 0
+        self._viewer_lock = threading.Lock()
+
+    @property
+    def viewers(self) -> int:
+        """How many clients are pulling a stream right now.
+
+        This is what tells ttycast whether anybody is actually looking, and so
+        whether the laptop's own screen is needed.
+        """
+        with self._viewer_lock:
+            return self._viewers
+
+    def viewer_arrived(self) -> None:
+        with self._viewer_lock:
+            self._viewers += 1
+
+    def viewer_left(self) -> None:
+        with self._viewer_lock:
+            self._viewers = max(0, self._viewers - 1)
 
     @property
     def port(self) -> int:

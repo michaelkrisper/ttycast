@@ -143,6 +143,40 @@ Wi-Fi Direct connect and the M1..M7 exchange — is not wired up yet. The path i
 unverified end to end because no P2P-capable radio was available while it was
 written. Reports from real sinks are very welcome.
 
+## Turning the laptop's own screen off
+
+The laptop in the corner does not need its own panel lit while the television is
+showing the same thing.
+
+```bash
+ttycast --screen-off                  # pick the best method available
+ttycast --screen-off backlight        # force one: sway, wlopm, xset, backlight
+ttycast screen-on                     # escape hatch, see below
+```
+
+The screen goes dark as soon as something connects to the stream and comes back
+five seconds after the last viewer leaves. The grace period is there so an MJPEG
+client reconnecting does not flap the panel on and off.
+
+Measured on the same i5-4258U, at full brightness:
+
+| State | Package power | Saved |
+|---|---|---|
+| Screen on | 23.4 W | - |
+| Backlight at zero | 17.2 W | 6.2 W |
+| Output powered down (`sway`) | **13.6 W** | **9.8 W** |
+
+Asking the compositor to power the output down beats dimming by 3.6 W, because
+the panel electronics stop as well and nothing is composited for a disabled
+output — which also gives some CPU back. That is why ttycast prefers it, and
+falls back to the backlight only where no compositor offers output power
+management.
+
+**If ttycast is killed outright** it never gets to restore anything, and you are
+left looking at a black laptop. `ttycast screen-on` undoes every method; so does
+`swaymsg output '*' dpms on` or `brightnessctl -r`, both of which can be typed
+blind.
+
 ## Options worth knowing
 
 ```
@@ -152,6 +186,7 @@ written. Reports from real sinks are very welcome.
     --bitrate 2M      H.264 bitrate for dlna/miracast
     --font PATH       a specific monospace font
     --encoder NAME    force an ffmpeg H.264 encoder
+    --screen-off      darken this laptop's screen while someone is watching
     --once            render one frame and exit
 ```
 

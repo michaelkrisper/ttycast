@@ -26,7 +26,8 @@ A terminal is not a video signal. It is a grid of characters that changes a few
 times a second, and only in places. So `ttycast` never captures the screen:
 
 - **Capture** is `tmux capture-pane`, a few kilobytes of text and colour codes,
-  fetched together with the pane geometry in a single tmux invocation.
+  fetched together with the pane geometry and the status line in a single tmux
+  invocation.
 - **An unchanged pane costs one string compare.** The raw capture is diffed
   before it is parsed, so an idle shell never reaches the renderer at all.
 - **A changed pane repaints the rows that changed**, not the screen. Typing a
@@ -187,6 +188,17 @@ left looking at a black laptop. `ttycast screen-on` undoes every method; so does
 `swaymsg output '*' dpms on` or `brightnessctl -r`, both of which can be typed
 blind.
 
+## The tmux status line
+
+`capture-pane` captures a *pane*, and the status line belongs to no pane - tmux
+draws it itself - so it never turns up in a capture. ttycast asks for it by name
+instead (`#{E:status-format[0]}`), which returns the finished line with real
+window names and real colours, still carrying tmux's own `#[fg=...,bold]` markup
+and `#[align=...]` directives. Those are parsed into cells and joined to the same
+grid, so the row diffing, the cursor and the glyph cache all keep working on one
+picture. `status-position` is honoured, multi-line status bars work, and
+`--no-status` turns it off.
+
 ## Making it readable from the sofa
 
 Glyph size is set by the **row count**, not the column count. The renderer fits
@@ -225,6 +237,7 @@ Two rendering details that matter on a television:
     --font PATH       a specific monospace font
     --margin 0.01     inset from the frame edge (TV overscan insurance)
     --quality 90      JPEG quality for MJPEG
+    --no-status       leave tmux's status line out of the picture
     --screen-off      darken this laptop's screen while someone is watching
     --once            render one frame and exit
 ```

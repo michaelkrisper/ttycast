@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- tmux's status line is now part of the picture. It belongs to no pane, so
+  `capture-pane` never sees it; it is asked for with `#{E:status-format[0]}`
+  and its `#[...]` style markup parsed into cells, keeping the real theme
+  colours and the highlighted window. Honours `status-position` and multi-line
+  status bars; `--no-status` turns it off.
 - Per-character font fallback through fontconfig (`fc-match ":charset=..."`),
   so Nerd Font icons, powerline separators and braille draw even when the
   primary monospace face has no such glyph. Resolved once per character and

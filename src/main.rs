@@ -14,6 +14,7 @@ mod fonts;
 mod framebus;
 mod render;
 mod server;
+mod status;
 mod upnp;
 mod wfd;
 mod wifi;
@@ -177,6 +178,10 @@ struct RunArgs {
     #[arg(long, default_value = "ttycast-preview.png")]
     preview_path: String,
 
+    /// Leave tmux's own status line out of the picture.
+    #[arg(long)]
+    no_status: bool,
+
     /// Darken this laptop's own screen while someone is watching the stream.
     #[arg(long, num_args = 0..=1, default_missing_value = "auto",
           value_parser = ["auto", "sway", "wlopm", "xset", "backlight"])]
@@ -248,6 +253,9 @@ fn command_doctor(port: u16, discover: bool) -> u8 {
     u8::from(!checks.iter().all(|c| c.ok || c.optional))
 }
 
+/// What the last tick saw, compared verbatim to decide whether anything moved.
+type Capture = (String, Vec<String>, usize, usize, (usize, usize));
+
 /// Owns everything that has to be torn down again.
 struct Session {
     args: RunArgs,
@@ -257,7 +265,9 @@ struct Session {
     screen: display::ScreenPower,
     frames: u64,
     tick_ms: f64,
-    last_capture: Option<(String, usize, usize, (usize, usize))>,
+    last_capture: Option<Capture>,
+    status: capture::StatusConfig,
+    status_style: ansi::Style,
 }
 
 impl Session {
@@ -270,6 +280,12 @@ impl Session {
                 .as_ref()
                 .and_then(|pref| display::pick(pref)),
         );
+        let status = if args.no_status {
+            capture::StatusConfig::default()
+        } else {
+            capture::status_config()
+        };
+        let status_style = status::parse_style(&status.style, ansi::Style::default());
         let ctx = Context {
             width,
             height,
@@ -304,6 +320,8 @@ impl Session {
             frames: 0,
             tick_ms: 0.0,
             last_capture: None,
+            status,
+            status_style,
         })
     }
 
@@ -313,8 +331,38 @@ impl Session {
         }
     }
 
+    /// Put the pane grid and tmux's status line into one screen.
+    ///
+    /// The status rows join the same grid rather than being drawn separately,
+    /// so row diffing, the cursor and the glyph cache all keep working on one
+    /// uniform picture.
+    fn compose(&self, info: &capture::PaneInfo, status: &[String], text: &str) -> ansi::Screen {
+        let mut screen = ansi::parse(text, info.width, info.height);
+        let mut cursor = info.cursor;
+
+        if !status.is_empty() {
+            let rows: Vec<Vec<ansi::Cell>> = status
+                .iter()
+                .map(|markup| status::render_line(markup, info.width, self.status_style))
+                .collect();
+            let count = rows.len();
+            if self.status.top {
+                cursor.1 += count;
+                let mut combined = rows;
+                combined.append(&mut screen.rows);
+                screen.rows = combined;
+            } else {
+                screen.rows.extend(rows);
+            }
+            screen.height += count;
+        }
+
+        screen.cursor = Some(cursor);
+        screen
+    }
+
     fn tick(&mut self, source: &PaneSource) -> bool {
-        let (info, text) = match source.read_raw() {
+        let (info, status, text) = match source.read_raw() {
             Ok(found) => found,
             Err(error) => {
                 let frame = self
@@ -329,14 +377,19 @@ impl Session {
         };
         // Comparing the raw capture is a string compare; it costs microseconds
         // and saves the parse and the render on every idle tick.
-        let signature = (text.clone(), info.width, info.height, info.cursor);
+        let signature = (
+            text.clone(),
+            status.clone(),
+            info.width,
+            info.height,
+            info.cursor,
+        );
         if self.last_capture.as_ref() == Some(&signature) {
             return false;
         }
         self.last_capture = Some(signature);
 
-        let mut screen = ansi::parse(&text, info.width, info.height);
-        screen.cursor = Some(info.cursor);
+        let screen = self.compose(&info, &status, &text);
         let frame = self.renderer.render(&screen);
         if let Some(server) = self.ctx.server.as_ref() {
             server.bus().publish(frame);
@@ -379,7 +432,10 @@ impl Session {
             return Ok(2);
         }
 
-        let source = PaneSource::new(capture::resolve_target(&self.args.target)?);
+        let source = PaneSource::new(
+            capture::resolve_target(&self.args.target)?,
+            self.status.lines,
+        );
         let bus = Arc::new(FrameBus::new(self.args.quality));
         let ts = if self.backend.wants_ts() {
             let encoder = encoder::pick_encoder(self.ctx.encoder.as_deref())

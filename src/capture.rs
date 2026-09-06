@@ -4,6 +4,7 @@
 //! already text: a grid plus SGR attributes is a few kilobytes, needs no
 //! compositor permission, and re-renders crisply at any TV resolution.
 
+use std::fmt::Write as _;
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -145,17 +146,60 @@ pub fn fallback_pane(exclude: &str) -> Option<String> {
     candidates.into_iter().next().map(|c| c.2)
 }
 
-/// Geometry, cursor and pane contents from a *single* tmux invocation.
+/// How tmux is drawing its own status line, read once at startup.
 ///
-/// Spawning tmux costs about as much as rendering a whole frame, so the two
-/// commands are chained with `;` and answered by one client.
-pub fn capture_bundle(target: &str) -> Result<(PaneInfo, String), String> {
+/// The status line belongs to no pane, so it never turns up in a capture; it
+/// has to be asked for by name. These options rarely change during a session,
+/// and re-reading them per frame would cost more than the whole render.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StatusConfig {
+    pub lines: usize,
+    pub top: bool,
+    pub style: String,
+}
+
+/// Parse the `status` option, which is `off`, `on`, or a line count.
+#[must_use]
+pub fn status_lines(value: &str) -> usize {
+    match value.trim() {
+        "off" | "" => 0,
+        "on" => 1,
+        other => other.parse().unwrap_or(1),
+    }
+}
+
+#[must_use]
+pub fn status_config() -> StatusConfig {
+    let option = |name: &str| tmux(&["show-options", "-gv", name]).unwrap_or_default();
+    StatusConfig {
+        lines: status_lines(&option("status")),
+        top: option("status-position").trim() == "top",
+        style: option("status-style").trim().to_string(),
+    }
+}
+
+/// Record separator: status markup may contain tabs and hashes, never this.
+const FIELD: char = '\x1e';
+
+/// Geometry, cursor, status lines and pane contents from a *single* tmux
+/// invocation.
+///
+/// Spawning tmux costs about as much as rendering a whole frame, so everything
+/// is chained with `;` and answered by one client.
+pub fn capture_bundle(
+    target: &str,
+    status_lines: usize,
+) -> Result<(PaneInfo, Vec<String>, String), String> {
+    let mut format = INFO_FORMAT.to_string();
+    for line in 0..status_lines {
+        let _ = write!(format, "{FIELD}#{{E:status-format[{line}]}}");
+    }
     let out = tmux(&[
         "display-message",
         "-p",
         "-t",
         target,
-        INFO_FORMAT,
+        &format,
         ";",
         "capture-pane",
         "-p",
@@ -165,21 +209,26 @@ pub fn capture_bundle(target: &str) -> Result<(PaneInfo, String), String> {
         target,
     ])?;
     let (first, rest) = out.split_once('\n').unwrap_or((out.as_str(), ""));
-    Ok((parse_info(first)?, rest.to_string()))
+    let mut fields = first.split(FIELD);
+    let info = parse_info(fields.next().unwrap_or_default())?;
+    let status: Vec<String> = fields.map(ToString::to_string).collect();
+    Ok((info, status, rest.to_string()))
 }
 
 pub struct PaneSource {
     pub target: String,
     pub avoid_self: bool,
+    pub status_lines: usize,
     own: Option<String>,
 }
 
 impl PaneSource {
     #[must_use]
-    pub fn new(target: String) -> Self {
+    pub fn new(target: String, status_lines: usize) -> Self {
         Self {
             target,
             avoid_self: true,
+            status_lines,
             own: own_pane(),
         }
     }
@@ -188,8 +237,8 @@ impl PaneSource {
     ///
     /// The caller compares this text with the previous capture: two identical
     /// strings mean nothing moved, so the parse and the render can be skipped.
-    pub fn read_raw(&self) -> Result<(PaneInfo, String), String> {
-        let (info, text) = capture_bundle(&self.target)?;
+    pub fn read_raw(&self) -> Result<(PaneInfo, Vec<String>, String), String> {
+        let (info, status, text) = capture_bundle(&self.target, self.status_lines)?;
         if self.avoid_self && self.own.as_deref() == Some(info.pane_id.as_str()) {
             // We are the active pane; mirroring ourselves would be a hall of
             // mirrors, so fall back to the pane the user was last in.
@@ -197,12 +246,12 @@ impl PaneSource {
                 .or_else(|| fallback_pane(self.own.as_deref().unwrap_or("")));
             if let Some(alternative) = alternative {
                 // Only one window open: showing ourselves is all we can do.
-                if let Ok(found) = capture_bundle(&alternative) {
+                if let Ok(found) = capture_bundle(&alternative, self.status_lines) {
                     return Ok(found);
                 }
             }
         }
-        Ok((info, text))
+        Ok((info, status, text))
     }
 }
 

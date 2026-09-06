@@ -7,6 +7,8 @@ permission, and re-renders crisply at any TV resolution.
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import os
 import shutil
 import subprocess
@@ -23,11 +25,18 @@ class TmuxError(RuntimeError):
     pass
 
 
+@functools.lru_cache(maxsize=1)
+def tmux_binary() -> str | None:
+    """Resolved once: a PATH walk per capture is several milliseconds wasted."""
+    return shutil.which("tmux")
+
+
 def _tmux(*args: str) -> str:
-    if shutil.which("tmux") is None:
+    binary = tmux_binary()
+    if binary is None:
         raise TmuxError("tmux not found on PATH")
     proc = subprocess.run(  # noqa: S603
-        ["tmux", *args], capture_output=True, text=True
+        [binary, *args], capture_output=True, text=True
     )
     if proc.returncode != 0:
         raise TmuxError(f"tmux {' '.join(args)}: {proc.stderr.strip()}")
@@ -95,6 +104,15 @@ def pane_info(target: str) -> PaneInfo:
     return parse_info(_tmux("display-message", "-p", "-t", target, _INFO_FORMAT))
 
 
+def last_window_target(target: str) -> str | None:
+    """``=work:`` -> ``=work:!``, tmux's own name for the last-used window.
+
+    Letting tmux resolve this saves a ``list-panes`` round trip and can never go
+    stale the way a cached pane id would.
+    """
+    return target + "!" if target.endswith(":") else None
+
+
 def fallback_pane(exclude: str) -> str | None:
     """Active pane of the last-used window, skipping ``exclude``.
 
@@ -122,6 +140,30 @@ def fallback_pane(exclude: str) -> str | None:
     return candidates[0][2]
 
 
+def capture_bundle(target: str) -> tuple[PaneInfo, str]:
+    """Geometry, cursor and pane contents from a *single* tmux invocation.
+
+    Spawning tmux costs about as much as rendering a whole frame, so the two
+    commands are chained with ``;`` and answered by one client.
+    """
+    out = _tmux(
+        "display-message",
+        "-p",
+        "-t",
+        target,
+        _INFO_FORMAT,
+        ";",
+        "capture-pane",
+        "-p",
+        "-e",
+        "-J",
+        "-t",
+        target,
+    )
+    first, _, rest = out.partition("\n")
+    return parse_info(first), rest
+
+
 class PaneSource:
     """Capture the pane behind ``target`` on demand."""
 
@@ -130,21 +172,26 @@ class PaneSource:
         self.avoid_self = avoid_self
         self._own = own_pane()
 
-    def _effective_target(self) -> str:
-        if not self.avoid_self or self._own is None:
-            return self.target
-        try:
-            info = pane_info(self.target)
-        except TmuxError:
-            return self.target
-        if info.pane_id != self._own:
-            return self.target
-        return fallback_pane(self._own) or self.target
+    def read_raw(self) -> tuple[PaneInfo, str]:
+        """Pane contents as tmux emitted them, before any parsing.
+
+        The caller compares this text with the previous capture: two identical
+        strings mean nothing on screen moved, and the parse and the render can
+        both be skipped.
+        """
+        info, text = capture_bundle(self.target)
+        if self.avoid_self and self._own is not None and info.pane_id == self._own:
+            # We are the active pane; mirroring ourselves would be a hall of
+            # mirrors, so fall back to the pane the user was last in.
+            alternative = last_window_target(self.target) or fallback_pane(self._own)
+            if alternative is not None:
+                # Only one window open: showing ourselves is all we can do.
+                with contextlib.suppress(TmuxError):
+                    info, text = capture_bundle(alternative)
+        return info, text
 
     def read(self) -> tuple[Screen, PaneInfo]:
-        target = self._effective_target()
-        info = pane_info(target)
-        text = _tmux("capture-pane", "-p", "-e", "-J", "-t", target)
+        info, text = self.read_raw()
         screen = parse(text, info.width, info.height)
         screen.cursor = info.cursor
         return screen, info

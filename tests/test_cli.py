@@ -39,9 +39,9 @@ def test_parse_size():
         cli.parse_size("big")
 
 
-def test_defaults_favour_a_low_frame_rate():
+def test_defaults_are_smooth_but_cheap():
     args = cli.build_parser().parse_args([])
-    assert args.fps == 5
+    assert args.fps == 10
     assert args.size == (1280, 720)
     assert args.backend == "browser"
 

@@ -25,13 +25,39 @@ no state on disk.
 A terminal is not a video signal. It is a grid of characters that changes a few
 times a second, and only in places. So `ttycast` never captures the screen:
 
-- **Capture** is `tmux capture-pane`, a few kilobytes of text and colour codes.
-- **Rendering** is Pillow drawing style runs, not pixels being scraped.
-- **A frame that did not change is not re-rendered.** At 5 fps an idle shell
-  costs almost nothing, and 1 fps is a legitimate setting.
+- **Capture** is `tmux capture-pane`, a few kilobytes of text and colour codes,
+  fetched together with the pane geometry in a single tmux invocation.
+- **An unchanged pane costs one string compare.** The raw capture is diffed
+  before it is parsed, so an idle shell never reaches the renderer at all.
+- **A changed pane repaints the rows that changed**, not the screen. Typing a
+  character redraws one row.
+- **Glyphs are rasterised once** and then blitted. FreeType is the expensive
+  part of drawing text, and a terminal uses the same hundred-odd glyphs forever.
 - Because the source is text, the output is **crisp at any resolution**. No
   upscaling of a laptop panel, no unreadable 8pt fonts on a screen three metres
   away.
+
+## Performance
+
+Measured on an Intel i5-4258U (a 2013 dual-core laptop), 1280x720 output, a
+149x44 pane:
+
+| Situation | Cost per frame | Ceiling |
+|---|---|---|
+| Idle - nothing on screen moved | 3.7 ms (one tmux call, no render) | - |
+| Typing - one row changed | ~5 ms | ~200 fps |
+| Full-screen scrolling - every row changed | ~29 ms | **34 fps sustained** |
+| H.264 encode, 720p, libopenh264 | 9 ms | 111 fps |
+
+The first version of the renderer drew each character with its own `draw.text`
+call and took **509 ms per frame**, which capped the whole thing at 2 fps. Run
+drawing, the glyph cache and row diffing took that to 15 ms. If you change the
+renderer, `tests/test_render.py` asserts that the incremental output is
+byte-identical to a full repaint, and that a one-row change repaints one row.
+
+Latency, end to end, is dominated by the transport and not by ttycast:
+`browser` is one frame, `miracast` is sub-second, and `dlna` is seconds because
+the television buffers.
 
 ## Install
 
@@ -119,7 +145,7 @@ written. Reports from real sinks are very welcome.
 
 ```
 -t, --target auto     which pane to mirror
--f, --fps 5           capture rate; 1 is fine, 10 is smooth
+-f, --fps 10          capture rate; 1 is fine, 30 is smooth
 -s, --size 1280x720   output resolution
     --bitrate 2M      H.264 bitrate for dlna/miracast
     --font PATH       a specific monospace font

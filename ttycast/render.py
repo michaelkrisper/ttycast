@@ -136,7 +136,18 @@ def style_runs(row: list[Cell]) -> list[tuple[int, str, Style]]:
 
 
 class Renderer:
-    """Draws :class:`~ttycast.ansi.Screen` objects into a fixed-size frame."""
+    """Draws :class:`~ttycast.ansi.Screen` objects into a fixed-size frame.
+
+    Two things keep this cheap enough to run at 10 fps on an old laptop:
+
+    * a whole style run is drawn with **one** ``draw.text`` call instead of one
+      per character, which moves the per-glyph loop from Python into FreeType;
+    * consecutive frames are diffed by row, so typing a character repaints one
+      row rather than the screen.
+
+    The canvas therefore persists between calls, and :meth:`render` hands out a
+    copy so a consumer encoding the previous frame never sees a half-drawn one.
+    """
 
     def __init__(
         self,
@@ -154,6 +165,17 @@ class Renderer:
         self._bold: AnyFont | None = None
         self._cell: tuple[int, int] = (1, 1)
         self._origin: tuple[int, int] = (0, 0)
+        self._canvas: Image.Image | None = None
+        self._draw: ImageDraw.ImageDraw | None = None
+        self._prev_rows: list[list[Cell]] | None = None
+        self._prev_cursor: tuple[int, int] | None = None
+        # Rasterising a glyph costs ~2.5 ms in FreeType, and a terminal draws
+        # the same few hundred glyphs over and over, so each one is rendered
+        # once into an alpha mask and then blitted.
+        self._glyphs: dict[tuple[str, bool], Image.Image] = {}
+        self._fill: RGB = self.theme.fg
+        self.full_redraws = 0
+        self.rows_drawn = 0
 
     def _prepare(self, cols: int, rows: int) -> None:
         if self._grid == (cols, rows):
@@ -168,50 +190,123 @@ class Renderer:
         cw, ch = self._cell
         self._origin = ((w - cw * cols) // 2, (h - ch * rows) // 2)
         self._grid = (cols, rows)
+        self._glyphs.clear()
+        self._canvas = None  # geometry moved, nothing on the old canvas is valid
 
     @property
     def font_size(self) -> int:
         return int(getattr(self._regular, "size", 0) or 0)
 
-    def render(self, screen: Screen) -> Image.Image:
-        self._prepare(screen.width, screen.height)
-        assert self._regular is not None and self._bold is not None
-        theme = self.theme
+    def _glyph(self, char: str, bold: bool) -> Image.Image:
+        """The alpha mask for one character, rasterised at most once."""
+        key = (char, bold)
+        mask = self._glyphs.get(key)
+        if mask is not None:
+            return mask
+        font = self._bold if bold else self._regular
+        assert font is not None
+        cw, ch = self._cell
+        # A double-width character (CJK, some emoji) is allowed to spill into
+        # the cell tmux left blank next to it, the way a terminal draws it.
+        width = max(cw, min(2 * cw, round(font.getlength(char))))
+        mask = Image.new("L", (width, ch), 0)
+        ImageDraw.Draw(mask).text((0, 0), char, font=font, fill=255)
+        self._glyphs[key] = mask
+        return mask
+
+    def _draw_row(self, row: list[Cell], index: int) -> None:
+        draw, theme = self._draw, self.theme
+        assert draw is not None and self._regular is not None and self._bold is not None
         cw, ch = self._cell
         ox, oy = self._origin
+        y = oy + index * ch
+        width = self.size[0]
 
-        image = Image.new("RGB", self.size, theme.bg)
-        draw = ImageDraw.Draw(image)
+        draw.rectangle([0, y, width - 1, y + ch - 1], fill=theme.bg)
 
-        for r, row in enumerate(screen.rows):
-            y = oy + r * ch
-            for col, text, style in style_runs(row):
-                x = ox + col * cw
-                bg = resolve(style.bg, theme.bg)
-                if bg != theme.bg:
-                    draw.rectangle([x, y, x + cw * len(text) - 1, y + ch - 1], fill=bg)
-                if text.strip():
-                    fg = resolve(style.fg, theme.fg, bold=style.bold)
-                    if style.dim:
-                        fg = tuple(c // 2 for c in fg)  # type: ignore[assignment]
-                    font = self._bold if style.bold else self._regular
-                    # Runs are monospace, but a glyph may be proportional after a
-                    # font fallback, so each cell is placed on its own column.
-                    for i, ch_ in enumerate(text):
-                        if ch_ != " ":
-                            draw.text((x + i * cw, y), ch_, font=font, fill=fg)
-                if style.underline:
-                    uy = y + ch - 2
-                    fg = resolve(style.fg, theme.fg, bold=style.bold)
-                    draw.line([x, uy, x + cw * len(text) - 1, uy], fill=fg)
+        for col, text, style in style_runs(row):
+            x = ox + col * cw
+            span = cw * len(text)
+            bg = resolve(style.bg, theme.bg)
+            if bg != theme.bg:
+                draw.rectangle([x, y, x + span - 1, y + ch - 1], fill=bg)
+            if not text.strip():
+                continue
+            fg = resolve(style.fg, theme.fg, bold=style.bold)
+            if style.dim:
+                fg = (fg[0] // 2, fg[1] // 2, fg[2] // 2)
+            self._fill = fg
+            self._blit_run(text, style.bold, x, y, span)
+            if style.underline:
+                uy = y + ch - 2
+                draw.line([x, uy, x + span - 1, uy], fill=fg)
+        self.rows_drawn += 1
+
+    def _blit_run(self, text: str, bold: bool, x: int, y: int, span: int) -> None:
+        """Compose a run's glyph masks, then lay the colour down in one paste."""
+        canvas = self._canvas
+        assert canvas is not None
+        cw, ch = self._cell
+        # One cell of slack so a double-width glyph at the end is not clipped.
+        mask = Image.new("L", (span + cw, ch), 0)
+        for i, char in enumerate(text):
+            if char != " ":
+                mask.paste(self._glyph(char, bold), (i * cw, 0))
+        right = min(x + span + cw, self.size[0])
+        if right <= x:
+            return
+        if right < x + span + cw:
+            mask = mask.crop((0, 0, right - x, ch))
+        canvas.paste(self._fill, (x, y, right, y + ch), mask)
+
+    def _draw_cursor(self, cursor: tuple[int, int], screen: Screen) -> None:
+        cx, cy = cursor
+        if not (0 <= cx < screen.width and 0 <= cy < screen.height):
+            return
+        assert self._draw is not None
+        cw, ch = self._cell
+        ox, oy = self._origin
+        x, y = ox + cx * cw, oy + cy * ch
+        self._draw.rectangle([x, y, x + cw - 1, y + ch - 1], outline=self.theme.cursor, width=2)
+
+    def _dirty_rows(self, screen: Screen) -> set[int]:
+        """Rows that differ from the last frame, plus the two the cursor touches."""
+        previous = self._prev_rows
+        assert previous is not None
+        dirty = {i for i, row in enumerate(screen.rows) if row != previous[i]}
+        for cursor in (self._prev_cursor, screen.cursor):
+            if cursor is not None and 0 <= cursor[1] < screen.height:
+                dirty.add(cursor[1])
+        return dirty
+
+    def render(self, screen: Screen) -> Image.Image:
+        self._prepare(screen.width, screen.height)
+
+        reusable = (
+            self._canvas is not None
+            and self._prev_rows is not None
+            and len(self._prev_rows) == screen.height
+        )
+        if reusable:
+            rows = self._dirty_rows(screen)
+        else:
+            self._canvas = Image.new("RGB", self.size, self.theme.bg)
+            self._draw = ImageDraw.Draw(self._canvas)
+            rows = set(range(screen.height))
+            self.full_redraws += 1
+
+        for index in sorted(rows):
+            self._draw_row(screen.rows[index], index)
 
         if screen.cursor is not None:
-            cx, cy = screen.cursor
-            if 0 <= cx < screen.width and 0 <= cy < screen.height:
-                x, y = ox + cx * cw, oy + cy * ch
-                draw.rectangle([x, y, x + cw - 1, y + ch - 1], outline=theme.cursor, width=2)
+            self._draw_cursor(screen.cursor, screen)
 
-        return image
+        # Rows are frozen cells from a freshly parsed screen; no copy needed.
+        self._prev_rows = screen.rows
+        self._prev_cursor = screen.cursor
+        assert self._canvas is not None
+        # The canvas keeps being drawn on, so hand out a snapshot.
+        return self._canvas.copy()
 
     def message(self, title: str, lines: list[str]) -> Image.Image:
         """A standalone card, used for "waiting for a pane" style states."""
@@ -225,4 +320,8 @@ class Renderer:
             draw.text(
                 (w // 2, h // 2 + i * (h // 18)), line, font=small, fill=self.theme.fg, anchor="mm"
             )
+        # A card is not part of the incremental stream; drop the diff state so
+        # the next real frame repaints everything.
+        self._canvas = None
+        self._prev_rows = None
         return image

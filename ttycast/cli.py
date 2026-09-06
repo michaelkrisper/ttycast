@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 
-from ttycast import __version__, capture, doctor, render, upnp
+from ttycast import __version__, ansi, capture, doctor, render, upnp
 from ttycast.backends import REGISTRY, BackendError, Context, create
 from ttycast.encoder import TSBroadcaster
 from ttycast.framebus import FrameBus
@@ -67,7 +67,7 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
         help="tmux target: auto (active pane), self (this pane), new (own session), "
         "or any tmux target string",
     )
-    parser.add_argument("-f", "--fps", type=int, default=5, help="capture rate (default: 5)")
+    parser.add_argument("-f", "--fps", type=int, default=10, help="capture rate (default: 10)")
     parser.add_argument(
         "-s", "--size", type=parse_size, default=(1280, 720), help="output resolution"
     )
@@ -122,6 +122,7 @@ class Session:
         self.ctx.log = self.log  # type: ignore[method-assign]
         self.renderer = render.Renderer(size=args.size, font=args.font)
         self.frames = 0
+        self.tick_ms = 0.0
 
     def log(self, message: str) -> None:
         if not self.args.quiet:
@@ -172,8 +173,11 @@ class Session:
         interval = 1.0 / max(1, self.args.fps)
         next_tick = time.monotonic()
         while not self.stop_event.is_set():
+            started = time.perf_counter()
             changed = self._tick(source)
             self.backend.on_frame(self.ctx, changed)
+            if changed:
+                self.tick_ms = (time.perf_counter() - started) * 1000
             next_tick += interval
             delay = next_tick - time.monotonic()
             if delay < 0:
@@ -184,26 +188,32 @@ class Session:
                 self._status()
         return 0
 
-    _last_key = None
+    _last_capture: tuple | None = None
 
     def _tick(self, source: capture.PaneSource) -> bool:
         try:
-            screen, _info = source.read()
+            info, text = source.read_raw()
         except capture.TmuxError as exc:
             frame = self.renderer.message("ttycast", ["no pane to mirror", str(exc)])
             self.bus.publish(frame)
+            self._last_capture = None
             return True
-        key = screen.key()
-        if key == self._last_key:
+        # Comparing the raw capture is a string compare; it costs microseconds
+        # and saves the parse and the render on every idle tick.
+        signature = (text, info.width, info.height, info.cursor)
+        if signature == self._last_capture:
             return False
-        self._last_key = key
+        self._last_capture = signature
+        screen = ansi.parse(text, info.width, info.height)
+        screen.cursor = info.cursor
         self.bus.publish(self.renderer.render(screen))
         self.frames += 1
         return True
 
     def _status(self) -> None:
         detail = self.backend.status(self.ctx)
-        line = f"\r  {self.frames} frames  {detail}  (ctrl-c to stop)"
+        cost = f"{self.tick_ms:4.1f} ms/frame" if self.tick_ms else ""
+        line = f"\r  {self.frames} frames  {cost}  {detail}  (ctrl-c to stop)"
         print(line[:110].ljust(110), end="", file=sys.stderr, flush=True)
 
     def shutdown(self) -> None:

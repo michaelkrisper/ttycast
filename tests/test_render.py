@@ -69,3 +69,78 @@ def test_message_card_renders():
     renderer = Renderer(size=(320, 180))
     frame = renderer.message("ttycast", ["line one", "line two"])
     assert frame.size == (320, 180)
+
+
+def screen_of(lines, width=20):
+    return parse("\n".join(lines), width, len(lines))
+
+
+def test_a_changed_row_repaints_only_that_row():
+    renderer = Renderer(size=(320, 180))
+    before = screen_of([f"line {i}" for i in range(8)])
+    renderer.render(before)
+    assert renderer.rows_drawn == 8  # first frame paints everything
+
+    after = screen_of([f"line {i}" for i in range(7)] + ["changed"])
+    renderer.rows_drawn = 0
+    renderer.render(after)
+    assert renderer.rows_drawn == 1
+
+
+def test_an_unchanged_screen_repaints_nothing():
+    renderer = Renderer(size=(320, 180))
+    screen = screen_of([f"line {i}" for i in range(8)])
+    renderer.render(screen)
+    renderer.rows_drawn = 0
+    renderer.render(screen_of([f"line {i}" for i in range(8)]))
+    assert renderer.rows_drawn == 0
+
+
+def test_a_moved_cursor_repaints_both_rows():
+    renderer = Renderer(size=(320, 180))
+    screen = screen_of([f"line {i}" for i in range(8)])
+    screen.cursor = (0, 1)
+    renderer.render(screen)
+
+    moved = screen_of([f"line {i}" for i in range(8)])
+    moved.cursor = (0, 5)
+    renderer.rows_drawn = 0
+    renderer.render(moved)
+    assert renderer.rows_drawn == 2  # the row it left and the row it entered
+
+
+def test_incremental_output_matches_a_full_repaint():
+    """The whole optimisation is only valid if the pixels come out the same."""
+    lines = [f"\x1b[3{i % 8}mline {i}\x1b[0m" for i in range(8)]
+    changed = lines[:7] + ["\x1b[1mdifferent now\x1b[0m"]
+
+    incremental = Renderer(size=(320, 180))
+    incremental.render(screen_of(lines))
+    step = incremental.render(screen_of(changed))
+
+    fresh = Renderer(size=(320, 180))
+    assert fresh.render(screen_of(changed)).tobytes() == step.tobytes()
+
+
+def test_a_grid_resize_forces_a_full_repaint():
+    renderer = Renderer(size=(320, 180))
+    renderer.render(screen_of(["a", "b"]))
+    renderer.rows_drawn = 0
+    renderer.render(screen_of(["a", "b", "c", "d"]))
+    assert renderer.rows_drawn == 4
+
+
+def test_glyphs_are_rasterised_once_per_character():
+    renderer = Renderer(size=(320, 180))
+    renderer.render(screen_of(["aaaa bbbb", "aaaa bbbb"]))
+    cached = len(renderer._glyphs)
+    renderer.render(screen_of(["bbbb aaaa", "aaaa bbbb"]))
+    assert cached == len(renderer._glyphs) == 2  # 'a' and 'b'; spaces are skipped
+
+
+def test_the_returned_frame_is_not_the_live_canvas():
+    renderer = Renderer(size=(320, 180))
+    first = renderer.render(screen_of(["hello", "world"]))
+    snapshot = first.tobytes()
+    renderer.render(screen_of(["hello", "CHANGED"]))
+    assert first.tobytes() == snapshot  # the earlier frame was not drawn over

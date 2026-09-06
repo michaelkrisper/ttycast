@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Rendering is roughly 30x faster: style runs are drawn in one call, glyphs are
+  rasterised once into cached masks, and consecutive frames are diffed by row.
+  A full repaint went from 509 ms to 15 ms at 720p on a 2013 dual-core laptop,
+  which lifts full-screen scrolling from 2 fps to 34 fps.
+- Capture asks tmux for geometry, cursor and contents in a single invocation
+  instead of three, and resolves the tmux binary once instead of walking `PATH`
+  on every frame.
+- An unchanged pane is now detected by comparing the raw capture, so idle ticks
+  skip both parsing and rendering.
+- The default frame rate is 10 fps, up from 5.
+- The status line reports milliseconds per frame.
+
 ## [0.1.0] - 2026-09-06
 
 First release.

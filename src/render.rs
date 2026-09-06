@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use fontdue::Font;
 
 use crate::ansi::{Cell, Color, Screen, Style};
+use crate::fonts::FontSet;
 
 pub type Rgb = [u8; 3];
 
@@ -74,7 +75,9 @@ impl Default for Theme {
             fg: [222, 222, 222],
             bg: [12, 12, 14],
             cursor: [255, 176, 0],
-            margin: 0.03,
+            // TVs mostly stopped overscanning; a browser never does. Keep a
+            // hair of inset so the outermost cells are not flush to the bezel.
+            margin: 0.01,
         }
     }
 }
@@ -142,8 +145,7 @@ pub struct Renderer {
     height: usize,
     theme: Theme,
     palette: [Rgb; 256],
-    regular: Font,
-    bold: Font,
+    fonts: FontSet,
     grid: Option<(usize, usize)>,
     cell_w: usize,
     cell_h: usize,
@@ -161,14 +163,13 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(width: usize, height: usize, theme: Theme, regular: Font, bold: Font) -> Self {
+    pub fn new(width: usize, height: usize, theme: Theme, fonts: FontSet) -> Self {
         Self {
             width,
             height,
             theme,
             palette: xterm256(),
-            regular,
-            bold,
+            fonts,
             grid: None,
             cell_w: 1,
             cell_h: 1,
@@ -205,16 +206,33 @@ impl Renderer {
         self.glyphs.len()
     }
 
-    /// Cell advance and line height of `font` at `px`.
-    fn metrics_at(font: &Font, px: f32) -> (usize, usize) {
+    /// Cell advance, cell height and the baseline offset within the cell.
+    ///
+    /// The height comes from FULL BLOCK (U+2588) when the font has it. A font
+    /// draws that glyph to fill its em box exactly, which is also what every
+    /// box-drawing and block character is designed against - so taking the
+    /// cell from it is what makes `+`-corners and `|`-verticals actually join
+    /// between rows. Line metrics from `hhea` are a few pixels shorter, and a
+    /// vertical bar drawn against them overhangs into the next row, where the
+    /// following row's background fill chops it off.
+    fn metrics_at(font: &Font, px: f32) -> (usize, usize, f32) {
         let advance = font.metrics('M', px).advance_width;
-        let line = font
-            .horizontal_line_metrics(px)
-            .map_or(px * 1.2, |m| m.ascent - m.descent);
-        (
-            advance.ceil().max(1.0) as usize,
-            line.ceil().max(1.0) as usize,
-        )
+        let cell_w = advance.ceil().max(1.0) as usize;
+
+        if font.has_glyph('\u{2588}') {
+            let block = font.metrics('\u{2588}', px);
+            if block.height > 0 {
+                // Placing a glyph uses `ascent - (ymin + height)`; making that
+                // zero for the block puts its top flush with the cell top.
+                let baseline = (block.ymin + block.height as i32) as f32;
+                return (cell_w, block.height.max(1), baseline);
+            }
+        }
+
+        let line = font.horizontal_line_metrics(px);
+        let height = line.map_or(px * 1.2, |m| m.ascent - m.descent);
+        let baseline = line.map_or(px, |m| m.ascent);
+        (cell_w, height.ceil().max(1.0) as usize, baseline)
     }
 
     /// Largest font size whose `cols` x `rows` grid still fits in the frame.
@@ -225,7 +243,7 @@ impl Renderer {
         let (mut lo, mut hi, mut best) = (4.0f32, 200.0f32, 4.0f32);
         while hi - lo > 0.5 {
             let mid = f32::midpoint(lo, hi);
-            let (cw, ch) = Self::metrics_at(&self.regular, mid);
+            let (cw, ch, _) = Self::metrics_at(self.fonts.primary(), mid);
             if (cw * cols) as f32 <= max_w && (ch * rows) as f32 <= max_h {
                 best = mid;
                 lo = mid;
@@ -241,13 +259,10 @@ impl Renderer {
             return;
         }
         self.px = self.fit(cols, rows);
-        let (cw, ch) = Self::metrics_at(&self.regular, self.px);
+        let (cw, ch, baseline) = Self::metrics_at(self.fonts.primary(), self.px);
         self.cell_w = cw;
         self.cell_h = ch;
-        self.ascent = self
-            .regular
-            .horizontal_line_metrics(self.px)
-            .map_or(self.px, |m| m.ascent);
+        self.ascent = baseline;
         self.origin_x = self.width.saturating_sub(cw * cols) / 2;
         self.origin_y = self.height.saturating_sub(ch * rows) / 2;
         self.grid = Some((cols, rows));
@@ -259,8 +274,13 @@ impl Renderer {
     fn glyph(&mut self, ch: char, bold: bool) -> &Glyph {
         let key = (ch, bold);
         if !self.glyphs.contains_key(&key) {
-            let font = if bold { &self.bold } else { &self.regular };
-            let (metrics, coverage) = font.rasterize(ch, self.px);
+            let px = self.px;
+            // The borrow of the font set ends with this block, so the glyph
+            // cache can be written to below.
+            let (metrics, coverage) = {
+                let font = self.fonts.face(ch, bold);
+                font.rasterize(ch, px)
+            };
             // fontdue reports ymin as the bitmap's bottom relative to the
             // baseline, with y growing upwards; our buffer grows downwards.
             let top = self.ascent.round() as i32 - (metrics.ymin + metrics.height as i32);
@@ -469,11 +489,10 @@ impl Renderer {
 mod tests {
     use super::*;
     use crate::ansi::parse;
-    use crate::fonts;
 
     fn renderer(width: usize, height: usize) -> Renderer {
-        let (regular, bold) = fonts::load(None, None).expect("a monospace font must exist");
-        Renderer::new(width, height, Theme::default(), regular, bold)
+        let fonts = FontSet::load(None, None).expect("a monospace font must exist");
+        Renderer::new(width, height, Theme::default(), fonts)
     }
 
     fn screen_of(lines: &[&str], width: usize) -> Screen {
@@ -637,5 +656,31 @@ mod tests {
         let mut r = renderer(320, 180);
         let frame = r.message("ttycast", &["no pane to mirror".to_string()]);
         assert_eq!(frame.data.len(), 320 * 180 * 3);
+    }
+}
+
+#[cfg(test)]
+mod glyph_size_probe {
+    use super::*;
+    use crate::ansi::parse;
+
+    #[test]
+    #[ignore = "reports numbers, asserts nothing"]
+    fn cell_size_by_column_count() {
+        for rows in [44usize, 36, 30, 24, 20, 16] {
+            let mut renderer = Renderer::new(
+                1280,
+                720,
+                Theme::default(),
+                FontSet::load(None, None).unwrap(),
+            );
+            renderer.render(&parse("x", 100, rows));
+            let (cw, ch) = renderer.cell();
+            eprintln!(
+                "  {rows:2} Zeilen (100 Spalten) -> Zelle {cw:2}x{ch:2} px, Schrift {:.0}, passt {} Spalten",
+                renderer.font_size(),
+                1241 / cw
+            );
+        }
     }
 }

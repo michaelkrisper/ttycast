@@ -4,19 +4,25 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use crate::render::Frame;
 
-/// libjpeg-turbo through mozjpeg, wound right back for speed.
+/// libjpeg-turbo through mozjpeg: fast where it does not show, exact where it
+/// does.
 ///
+/// Two settings decide this, and both were measured rather than assumed.
 /// mozjpeg optimises for file size by default - trellis quantisation and
-/// optimised Huffman tables - which costs 90 ms per 720p frame. Turning that
-/// off and taking 4:2:0 chroma gets the same frame down to 3.3 ms, which is
-/// faster than the pure-Rust encoders by a factor of four and a half. A live
-/// terminal wants the time far more than the last few kilobytes.
+/// optimised Huffman tables - which costs 90 ms per 720p frame for bytes
+/// nobody is counting on a LAN; turning that off is free quality-wise.
+///
+/// Chroma subsampling is the opposite trade. 4:2:0 halves colour resolution in
+/// both axes, and a terminal is thin coloured glyphs on a dark background -
+/// exactly the content it wrecks. Full 4:4:4 chroma costs 15.6 ms instead of
+/// 8.7 ms per 1080p frame, which at 15 fps is affordable, and it is the
+/// difference between crisp text and coloured fringes.
 fn encode_jpeg(frame: &Frame, quality: u8) -> Option<Vec<u8>> {
     let mut compress = mozjpeg::Compress::new(mozjpeg::ColorSpace::JCS_RGB);
     compress.set_fastest_defaults();
     compress.set_optimize_coding(false);
     compress.set_optimize_scans(false);
-    compress.set_chroma_sampling_pixel_sizes((2, 2), (2, 2));
+    compress.set_chroma_sampling_pixel_sizes((1, 1), (1, 1));
     compress.set_size(frame.width, frame.height);
     compress.set_quality(f32::from(quality));
     let mut started = compress.start_compress(Vec::new()).ok()?;
@@ -168,5 +174,74 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         bus.close();
         assert_eq!(waiter.join().unwrap(), 1);
+    }
+}
+
+#[cfg(test)]
+mod quality_probe {
+    use super::*;
+    use crate::ansi::parse;
+    use crate::fonts::FontSet;
+    use crate::render::{Renderer, Theme};
+
+    fn sample(width: usize, height: usize) -> Frame {
+        let lines: Vec<String> = (0..30)
+            .map(|i| {
+                format!(
+                    "\x1b[3{}m{:3}\x1b[0m \x1b[1msrc/main.rs\x1b[0m \x1b[2m{}\x1b[0m ok {}",
+                    i % 8,
+                    i,
+                    "-".repeat(20),
+                    i * 7
+                )
+            })
+            .collect();
+        let mut renderer = Renderer::new(
+            width,
+            height,
+            Theme::default(),
+            FontSet::load(None, None).unwrap(),
+        );
+        renderer.render(&parse(&lines.join("\n"), 100, 30))
+    }
+
+    fn encode(frame: &Frame, quality: u8, chroma: (u8, u8)) -> (f64, usize) {
+        let mut best = f64::MAX;
+        let mut size = 0;
+        for _ in 0..8 {
+            let start = std::time::Instant::now();
+            let mut compress = mozjpeg::Compress::new(mozjpeg::ColorSpace::JCS_RGB);
+            compress.set_fastest_defaults();
+            compress.set_optimize_coding(false);
+            compress.set_optimize_scans(false);
+            compress.set_chroma_sampling_pixel_sizes(chroma, chroma);
+            compress.set_size(frame.width, frame.height);
+            compress.set_quality(f32::from(quality));
+            let mut started = compress.start_compress(Vec::new()).unwrap();
+            started.write_scanlines(&frame.data).unwrap();
+            let out = started.finish().unwrap();
+            best = best.min(start.elapsed().as_secs_f64() * 1000.0);
+            size = out.len();
+        }
+        (best, size)
+    }
+
+    #[test]
+    #[ignore = "reports numbers, asserts nothing"]
+    fn quality_versus_time() {
+        for (w, h) in [(1280usize, 720usize), (1920, 1080)] {
+            let frame = sample(w, h);
+            eprintln!("--- {w}x{h} ---");
+            for chroma in [(2u8, 2u8), (1, 1)] {
+                let label = if chroma == (2, 2) { "4:2:0" } else { "4:4:4" };
+                for quality in [80u8, 85, 90, 95] {
+                    let (ms, size) = encode(&frame, quality, chroma);
+                    eprintln!(
+                        "  {label}  q={quality}  {ms:5.2} ms  {:5.0} KiB",
+                        size as f64 / 1024.0
+                    );
+                }
+            }
+        }
     }
 }

@@ -130,7 +130,7 @@ struct RunArgs {
     fps: u32,
 
     /// Output resolution.
-    #[arg(short, long, default_value = "1280x720", value_parser = parse_size)]
+    #[arg(short, long, default_value = "1920x1080", value_parser = parse_size)]
     size: (usize, usize),
 
     /// H.264 bitrate for dlna/miracast.
@@ -149,8 +149,12 @@ struct RunArgs {
     #[arg(long)]
     font: Option<String>,
 
+    /// Inset from the frame edge, as a fraction (TV overscan insurance).
+    #[arg(long, default_value_t = 0.01)]
+    margin: f32,
+
     /// JPEG quality for MJPEG.
-    #[arg(long, default_value_t = 80)]
+    #[arg(long, default_value_t = 90)]
     quality: u8,
 
     /// dlna: pick a renderer by name substring.
@@ -260,7 +264,7 @@ impl Session {
     fn new(args: RunArgs) -> Result<Self, String> {
         let backend = backend::create(&args.backend)?;
         let (width, height) = args.size;
-        let (regular, bold) = fonts::load(args.font.as_deref(), None)?;
+        let font_set = fonts::FontSet::load(args.font.as_deref(), None)?;
         let screen = display::ScreenPower::new(
             args.screen_off
                 .as_ref()
@@ -285,7 +289,15 @@ impl Session {
         };
         Ok(Self {
             backend,
-            renderer: Renderer::new(width, height, Theme::default(), regular, bold),
+            renderer: Renderer::new(
+                width,
+                height,
+                Theme {
+                    margin: args.margin,
+                    ..Theme::default()
+                },
+                font_set,
+            ),
             screen,
             ctx,
             args,
@@ -503,7 +515,7 @@ mod tests {
     fn defaults_are_smooth_but_cheap() {
         let cli = Cli::parse_from(["ttycast"]);
         assert_eq!(cli.run.fps, 10);
-        assert_eq!(cli.run.size, (1280, 720));
+        assert_eq!(cli.run.size, (1920, 1080));
         assert_eq!(cli.run.backend, "browser");
         assert_eq!(cli.run.port, DEFAULT_PORT);
         assert!(cli.run.screen_off.is_none());

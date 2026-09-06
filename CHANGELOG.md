@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Per-character font fallback through fontconfig (`fc-match ":charset=..."`),
+  so Nerd Font icons, powerline separators and braille draw even when the
+  primary monospace face has no such glyph. Resolved once per character and
+  cached; verified against a real Nerd Font on the machine.
+- `--margin` to set the inset from the frame edge, defaulting to 1% now that
+  televisions have largely stopped overscanning (was a fixed 3%).
+
+### Changed
+
+- Default output resolution is 1920x1080, and default JPEG quality is 90.
+- JPEG uses full 4:4:4 chroma instead of 4:2:0. Subsampling halves colour
+  resolution in both axes and a terminal is thin coloured glyphs on a dark
+  background, which is exactly what it ruins; measured cost is 15.6 ms instead
+  of 8.7 ms per 1080p frame.
+
+### Fixed
+
+- Box-drawing and block characters came out as disconnected fragments. The cell
+  height was taken from the font's `hhea` line metrics, but those glyphs are
+  drawn against the em box, which is taller - so a vertical bar overhung into
+  the next row and was chopped off by that row's background fill. The cell
+  height now comes from FULL BLOCK (U+2588) where the font has it, which is the
+  same box those characters are designed against, so borders tile exactly.
+
 ## [0.2.0] - 2026-09-06
 
 Rewritten in Rust. Same features, same CLI, one static binary.

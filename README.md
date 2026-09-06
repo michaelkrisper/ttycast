@@ -11,7 +11,7 @@ sofa, and the shell on the big screen.
 
 ```
 $ ttycast
-ttycast 0.2.0  1280x720 @ 10 fps  backend=browser
+ttycast 0.2.0  1920x1080 @ 10 fps  backend=browser
   open on the TV:  http://192.168.1.42:8009/
   raw stream:      http://192.168.1.42:8009/stream.mjpg
   14 frames   1.2 ms/frame  http://192.168.1.42:8009/  (ctrl-c to stop)
@@ -31,7 +31,9 @@ times a second, and only in places. So `ttycast` never captures the screen:
   before it is parsed, so an idle shell never reaches the renderer at all.
 - **A changed pane repaints the rows that changed**, not the screen. Typing a
   character redraws one row.
-- **Glyphs are rasterised once** into coverage masks and then blitted.
+- **Glyphs are rasterised once** into coverage masks and then blitted, with a
+  fontconfig fallback per character so Nerd Font icons and powerline separators
+  draw even when the terminal font has no such glyph.
 - Because the source is text, the output is **crisp at any resolution**. No
   upscaling of a laptop panel, no unreadable 8pt fonts on a screen three metres
   away.
@@ -185,15 +187,44 @@ left looking at a black laptop. `ttycast screen-on` undoes every method; so does
 `swaymsg output '*' dpms on` or `brightnessctl -r`, both of which can be typed
 blind.
 
+## Making it readable from the sofa
+
+Glyph size is set by the **row count**, not the column count. The renderer fits
+the grid into the frame, and with a typical terminal the height binds first:
+
+| tmux pane | cell at 1080p |
+|---|---|
+| 44 rows | 12x23 px |
+| 36 rows | 14x28 px |
+| 24 rows | 18x39 px |
+
+So a shorter pane is what makes the text bigger; a narrower one changes nothing
+until the width becomes the binding constraint. `tmux resize-window -y 24` is
+the lever.
+
+Two rendering details that matter on a television:
+
+- **JPEG uses full 4:4:4 chroma.** 4:2:0 halves colour resolution in both axes,
+  and a terminal is thin coloured glyphs on a dark background - exactly the
+  content that wrecks. It costs 15.6 ms instead of 8.7 ms per 1080p frame.
+- **The cell height comes from FULL BLOCK (U+2588)**, not from the font's line
+  metrics. Box-drawing and block characters are drawn against the em box, which
+  is a few pixels taller than the line height; sized against line metrics they
+  overhang into the next row and get chopped off by its background fill, so
+  table borders come out as disconnected fragments. Taking the cell from the
+  block glyph makes them tile exactly.
+
 ## Options worth knowing
 
 ```
 -t, --target auto     which pane to mirror
 -f, --fps 10          capture rate; 1 is fine, 60 is smooth
--s, --size 1280x720   output resolution
+-s, --size 1920x1080  output resolution
     --bitrate 2M      H.264 bitrate for dlna/miracast
     --encoder NAME    force an ffmpeg H.264 encoder
     --font PATH       a specific monospace font
+    --margin 0.01     inset from the frame edge (TV overscan insurance)
+    --quality 90      JPEG quality for MJPEG
     --screen-off      darken this laptop's screen while someone is watching
     --once            render one frame and exit
 ```

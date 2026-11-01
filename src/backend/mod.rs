@@ -149,7 +149,10 @@ mod tests {
 
     #[test]
     fn the_browser_backend_needs_nothing() {
-        assert!(create("browser").unwrap().preflight(&context()).is_empty());
+        assert_eq!(
+            create("browser").unwrap().preflight(&context()),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

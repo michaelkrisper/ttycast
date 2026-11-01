@@ -185,6 +185,6 @@ mod tests {
         assert!(checks.iter().any(|c| c.name == "tmux"));
         assert!(checks.iter().any(|c| c.name == "monospace font"));
         assert!(checks.iter().any(|c| c.name.starts_with("port")));
-        assert!(!format(&checks).is_empty());
+        assert_ne!(format(&checks), "");
     }
 }

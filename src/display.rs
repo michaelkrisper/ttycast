@@ -230,8 +230,8 @@ mod tests {
     #[test]
     fn every_method_has_a_name_and_a_description() {
         for method in METHODS {
-            assert!(!method.name().is_empty());
-            assert!(!method.describes().is_empty());
+            assert_ne!(method.name(), "");
+            assert_ne!(method.describes(), "");
             assert_eq!(Method::from_name(method.name()), Some(method));
         }
     }

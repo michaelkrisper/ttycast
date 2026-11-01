@@ -174,7 +174,7 @@ Wiphy phy1\n\tSupported interface modes:\n\t\t * monitor\n";
 
     #[test]
     fn empty_input_yields_nothing() {
-        assert!(parse_iw_list("").is_empty());
+        assert_eq!(parse_iw_list(""), Vec::<Phy>::new());
     }
 
     #[test]

@@ -1,5 +1,10 @@
 # ttycast
 
+[![CI](https://github.com/michaelkrisper/ttycast/actions/workflows/ci.yml/badge.svg)](https://github.com/michaelkrisper/ttycast/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmichaelkrisper%2Fttycast%2Fmain%2FCargo.toml&query=%24.package.version&label=version)](CHANGELOG.md)
+[![MSRV](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmichaelkrisper%2Fttycast%2Fmain%2FCargo.toml&query=%24.package%5B'rust-version'%5D&label=MSRV)](Cargo.toml)
+
 Put your terminal on the TV, from the terminal.
 
 `ttycast` mirrors a tmux pane to a television over the network. It reads the
@@ -61,6 +66,8 @@ Two of those numbers are worth explaining, because they were not free:
   default - trellis quantisation, optimised Huffman tables - which costs 90 ms
   per 720p frame; `set_fastest_defaults()` and 4:2:0 chroma bring it to 3.3 ms.
   A live terminal wants the milliseconds far more than the last few kilobytes.
+  (The 3.3 ms was measured with 4:2:0; the default is now 4:4:4, see
+  [Making it readable from the sofa](#making-it-readable-from-the-sofa).)
 - **Capture.** About 3.7 ms of every frame is spawning tmux and reading its
   pipe. That is process overhead and no language changes it, which is why
   capture was folded into a single invocation rather than three.

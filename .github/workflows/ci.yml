@@ -40,4 +40,5 @@ jobs:
           toolchain: "1.85"
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y nasm
-      - run: cargo check --locked --all-targets
+      # Only the shipped binary; dev-dependencies may need a newer toolchain.
+      - run: cargo check --locked

@@ -2,7 +2,7 @@
 name = "ttycast"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Cast your terminal to a TV - browser, DLNA or Miracast, straight from the shell."
 authors = ["Michael Krisper <michael.krisper@gmail.com>"]
 license = "MIT"

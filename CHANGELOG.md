@@ -22,6 +22,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Minimum supported Rust version is 1.88, not 1.85: the code uses let chains,
+  and fontdue needs 1.87. The MSRV is now checked in CI.
 - Default output resolution is 1920x1080, and default JPEG quality is 90.
 - JPEG uses full 4:4:4 chroma instead of 4:2:0. Subsampling halves colour
   resolution in both axes and a terminal is thin coloured glyphs on a dark

@@ -307,7 +307,7 @@ impl Renderer {
         for row in y..(y + h).min(self.height) {
             let start = row * stride + x * 3;
             let end = row * stride + right * 3;
-            for pixel in self.canvas[start..end].chunks_exact_mut(3) {
+            for pixel in self.canvas[start..end].as_chunks_mut::<3>().0 {
                 pixel.copy_from_slice(&color);
             }
         }
@@ -438,7 +438,7 @@ impl Renderer {
             self.dirty_rows(screen)
         } else {
             let bg = self.theme.bg;
-            for pixel in self.canvas.chunks_exact_mut(3) {
+            for pixel in self.canvas.as_chunks_mut::<3>().0 {
                 pixel.copy_from_slice(&bg);
             }
             self.canvas_valid = true;

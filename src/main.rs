@@ -75,7 +75,7 @@ fn parse_size(text: &str) -> Result<(usize, usize), String> {
 #[derive(Parser, Debug)]
 #[command(
     name = "ttycast",
-    version,
+    version = env!("TTYCAST_VERSION"),
     about = "Cast a terminal to a TV.",
     after_help = "backends:\n  \
         browser   serve MJPEG at a URL; open it on the TV, a phone or a laptop\n  \
@@ -459,7 +459,7 @@ impl Session {
         if !self.args.quiet {
             eprintln!(
                 "ttycast {}  {}x{} @ {} fps  backend={}",
-                env!("CARGO_PKG_VERSION"),
+                env!("TTYCAST_VERSION"),
                 self.ctx.width,
                 self.ctx.height,
                 self.ctx.fps,

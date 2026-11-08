@@ -3,7 +3,7 @@ name: Tickets
 # Every pull request needs a ticket. The issue number is taken from the branch
 # name (<issue>-<slug>, as created by `gh issue develop`) and written into the
 # description as "Closes #<issue>", so merging closes the issue. Bot PRs
-# (Dependabot) are exempt.
+# (Dependabot) pass without a ticket.
 
 on:
   pull_request:
@@ -17,7 +17,6 @@ permissions:
 jobs:
   ticket:
     name: Linked ticket
-    if: github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

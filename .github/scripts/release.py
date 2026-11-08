@@ -511,7 +511,47 @@ def merge_if_green(number: int, sha: str, default: str) -> bool:
             return False
         raise
     summary(f"Merged PR #{number}.")
+    close_linked_issues(number)
     return True
+
+
+def close_linked_issues(number: int) -> None:
+    """Close the PR's tickets: GitHub skips that for merges made by the GITHUB_TOKEN."""
+    owner, name = repo().split("/")
+    query = (
+        "query($owner: String!, $name: String!, $number: Int!) {"
+        " repository(owner: $owner, name: $name) {"
+        " pullRequest(number: $number) {"
+        " closingIssuesReferences(first: 20) { nodes { number state } } } } }"
+    )
+    data = gh_json(
+        "api",
+        "graphql",
+        "-f",
+        f"query={query}",
+        "-F",
+        f"owner={owner}",
+        "-F",
+        f"name={name}",
+        "-F",
+        f"number={number}",
+    )
+    pr = data["data"]["repository"]["pullRequest"]
+    for issue in pr["closingIssuesReferences"]["nodes"]:
+        if issue["state"] == "OPEN":
+            run(
+                "gh",
+                "issue",
+                "close",
+                str(issue["number"]),
+                "--repo",
+                repo(),
+                "--reason",
+                "completed",
+                "--comment",
+                f"Fixed by #{number}.",
+            )
+            print(f"Closed #{issue['number']}.")
 
 
 def cmd_automerge() -> int:

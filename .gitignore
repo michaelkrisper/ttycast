@@ -1,3 +1,5 @@
 /target
 *.png
 !docs/*.png
+
+CLAUDE.local.md

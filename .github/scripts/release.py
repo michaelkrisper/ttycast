@@ -412,6 +412,11 @@ def linked_issue_count(number: int) -> int:
 
 def cmd_ticket() -> int:
     pr = event()["pull_request"]
+    if pr["user"]["type"] == "Bot":
+        # Dependabot and other bots need no ticket. Passing (not skipping) keeps
+        # this run a successful trigger for Auto-merge.
+        summary(f"Bot pull request by {pr['user']['login']}; no ticket needed.")
+        return 0
     number, body, branch = pr["number"], pr.get("body") or "", pr["head"]["ref"]
     refs = [n for n in closing_refs(body) if is_issue(n)]
     if refs:

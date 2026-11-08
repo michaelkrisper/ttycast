@@ -4,7 +4,10 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+This file ends with 0.2.1. Later changes are listed in the
+[GitHub releases](https://github.com/michaelkrisper/ttycast/releases).
+
+## [0.2.1] - 2026-11-08
 
 ### Added
 
@@ -90,5 +93,5 @@ First release.
 - H.264 encoder autodetection across `libx264`, `libopenh264` and `h264_vaapi`,
   so distributions shipping a patent-free ffmpeg work without extra packages.
 
-[Unreleased]: https://github.com/michaelkrisper/ttycast/compare/v0.1.0...HEAD
+[0.2.1]: https://github.com/michaelkrisper/ttycast/compare/v0.2.0...v0.2.1
 [0.1.0]: https://github.com/michaelkrisper/ttycast/releases/tag/v0.1.0
